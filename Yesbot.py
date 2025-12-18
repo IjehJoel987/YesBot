@@ -142,7 +142,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         f"🎉 Welcome {user.first_name}!\n\n"
-        f"🛒 <b>Your One-Stop Shop</b>\n\n"
+        f"🛒 Your One-Stop Shop\n\n"
         f"Browse our collection:\n"
         f"Gagdets and Accessories💻⚡️\n"
         f"Your Customized Home🏡(Stickers, books etc.)🤭\n"
@@ -833,3 +833,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
