@@ -21,8 +21,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 # ============= CONFIGURATION =============
 BOT_TOKEN = "7895888177:AAEYLZ9zHxovachLhTIfr7-zs3IYUmxzvng"
-OWNER_ID = 6340039582  # Replace with owner's Telegram ID
-ADMIN_IDS = {6340039582}  # Add more admin IDs here
+OWNER_ID = 5662429081  # Replace with owner's Telegram ID
+ADMIN_IDS = {6340039582,7487465564}  # Add more admin IDs here
 DATA_FILE = "shop_data.json"
 
 # ============= DATA MODELS =============
@@ -55,7 +55,7 @@ class Order:
 products: Dict[str, Product] = {}
 orders: Dict[str, Order] = {}
 user_states: Dict[int, Dict] = {}
-
+user_ids_set: set = set()
 # ============= DATA PERSISTENCE =============
 def save_data():
     """Save all data to JSON file"""
@@ -63,7 +63,8 @@ def save_data():
         data = {
             "products": {pid: asdict(p) for pid, p in products.items()},
             "orders": {oid: asdict(o) for oid, o in orders.items()},
-            "admin_ids": list(ADMIN_IDS)
+            "admin_ids": list(ADMIN_IDS),
+            "user_ids": list(user_ids_set)  # Add this line
         }
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -93,7 +94,9 @@ def load_data():
         # Load admin IDs
         if "admin_ids" in data:
             ADMIN_IDS.update(data["admin_ids"])
-        
+        # Load user IDs
+        if "user_ids" in data:
+            user_ids_set.update(data["user_ids"])
         logger.info(f"Loaded {len(products)} products, {len(orders)} orders")
     except Exception as e:
         logger.error(f"Error loading data: {e}")
@@ -123,7 +126,7 @@ async def notify_admins(context: ContextTypes.DEFAULT_TYPE, message: str):
             await context.bot.send_message(
                 chat_id=admin_id,
                 text=message,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.HTML
             )
         except Exception as e:
             logger.error(f"Failed to notify admin {admin_id}: {e}")
@@ -133,9 +136,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message"""
     user = update.effective_user
     
+    # Track user
+    user_ids_set.add(user.id)
+    save_data()
+
     welcome_text = (
         f"🎉 Welcome {user.first_name}!\n\n"
-        f"🛒 **Your One-Stop Shop**\n\n"
+        f"🛒 <b>Your One-Stop Shop</b>\n\n"
         f"Browse our collection:\n"
         f"Gagdets and Accessories💻⚡️\n"
         f"Your Customized Home🏡(Stickers, books etc.)🤭\n"
@@ -159,26 +166,65 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+async def show_main_menu(query):
+    """Show main menu inline"""
+    user = query.from_user
+    
+    welcome_text = (
+        f"🎉 Welcome back {user.first_name}!\n\n"
+        f"🛒 <b>Your One-Stop Shop</b>\n\n"
+        f"Browse our collection:\n"
+        f"Gagdets and Accessories💻⚡️\n"
+        f"Your Customized Home🏡(Stickers, books etc.)🤭\n"
+        f"Shoes & Jewelleries✨😎\n\n"
+        f"Use the menu below to get started! 🚀"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("Gagdets and Accessories💻⚡️", callback_data="browse_pc")],
+        [InlineKeyboardButton("Your Customized Home🏡(Stickers, books etc.)🤭", callback_data="browse_laptop")],
+        [InlineKeyboardButton("Shoes & Jewelleries✨😎", callback_data="browse_shoes")],
+        [InlineKeyboardButton("📦 My Orders", callback_data="my_orders")],
+    ]
+    
+    if is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin_panel")])
+    
+    await query.edit_message_text(
+        welcome_text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show help message"""
     help_text = (
-        "🆘 **Help & Commands**\n\n"
-        "**Shopping:**\n"
+        "🆘 <b>Help & Commands</b>\n\n"
+        "<b>Shopping:</b>\n"
         "/start - Main menu\n"
-        "/browse - Browse products\n"
+        "/cancel - Cancel current operation\n"
         "/orders - View your orders\n\n"
     )
     
     if is_admin(update.effective_user.id):
         help_text += (
-            "**Admin Commands:**\n"
+            "<b>Admin Commands:</b>\n"
             "/admin - Admin panel\n"
             "/addproduct - Add new product\n"
             "/orders_admin - View all orders\n"
-            "/broadcast <message> - Send to all users\n"
+            "/broadcast &lt;message&gt; - Send to all users\n"
         )
     
-    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel current operation"""
+    user_id = update.effective_user.id
+    if user_id in user_states:
+        user_states.pop(user_id, None)
+        await update.message.reply_text("❌ Operation cancelled.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]))
+    else:
+        await update.message.reply_text("No active operation to cancel.")
 
 # ============= PRODUCT BROWSING =============
 async def browse_category(query, category: str):
@@ -196,11 +242,17 @@ async def browse_category(query, category: str):
     
     # Show product list
     category_names = {"pc": "Gagdets and Accessories💻⚡️", "laptop": "Your Customized Home🏡(Stickers, books etc.)🤭", "shoes": "Shoes & Jewelleries✨😎"}
-    text = f"🛍️ **{category_names[category]}**\n\n"
+    text = f"🛍️ <b>{category_names[category]}</b>\n\n"
+    
+    if category == "pc":
+        text += "📝 <b>Note:</b> Every gadget comes with a free case, charger, screenguard & earpiece/earpods/stylus pen depending on the gadget purchase❤️\n\n"
     
     keyboard = []
     for product in category_products:
-        text += f"• {product.name} - {format_price(product.price)}\n"
+        if category == "pc":
+            text += f"• {product.name} - {format_price(product.price)}\n"
+        else:
+            text += f"• {product.name}\n"
         keyboard.append([InlineKeyboardButton(
             f"👁️ {product.name}",
             callback_data=f"view_{product.id}"
@@ -210,7 +262,7 @@ async def browse_category(query, category: str):
     
     await query.edit_message_text(
         text,
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -222,19 +274,32 @@ async def view_product(query, product_id: str):
     
     product = products[product_id]
     
-    # Prepare caption
-    caption = (
-        f"✨ **{product.name}**\n\n"
-        f"📝 {product.description}\n\n"
-        f"💰 **Price:** {format_price(product.price)}\n"
-        f"📦 **Status:** {'✅ In Stock' if product.in_stock else '❌ Out of Stock'}"
-    )
-    
-    keyboard = [
-        [InlineKeyboardButton("🛒 Order Now", callback_data=f"order_{product_id}")],
-        [InlineKeyboardButton("◀️ Back", callback_data=f"browse_{product.category}")],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
-    ]
+    # Prepare caption based on category
+    if product.category == "pc":
+        caption = (
+            f"✨ <b>{product.name}</b>\n\n"
+            f"📝 {product.description}\n\n"
+            f"💰 <b>Price:</b> {format_price(product.price)}\n"
+            f"📦 <b>Status:</b> {'✅ In Stock' if product.in_stock else '❌ Out of Stock'}"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🛒 Order Now", callback_data=f"order_{product_id}")],
+            [InlineKeyboardButton("◀️ Back", callback_data=f"browse_{product.category}")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+        ]
+    else:
+        caption = (
+            f"✨ <b>{product.name}</b>\n\n"
+            f"📝 {product.description}\n\n"
+            f"📞 <b>Contact seller for price and availability</b>\n"
+            f"📱 Phone: +2349040164120\n"
+            f"📢 Telegram: @Tobi_Edmund\n\n"
+            f"📦 <b>Status:</b> {'✅ In Stock' if product.in_stock else '❌ Out of Stock'}"
+        )
+        keyboard = [
+            [InlineKeyboardButton("◀️ Back", callback_data=f"browse_{product.category}")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+        ]
     
     # Send images
     if product.images:
@@ -243,13 +308,13 @@ async def view_product(query, product_id: str):
             await query.message.reply_photo(
                 photo=product.images[0],
                 caption=caption,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
             # Multiple images as media group
             media = [
-                InputMediaPhoto(media=img, caption=caption if i == 0 else None, parse_mode=ParseMode.MARKDOWN)
+                InputMediaPhoto(media=img, caption=caption if i == 0 else None, parse_mode=ParseMode.HTML)
                 for i, img in enumerate(product.images[:10])  # Max 10 images
             ]
             await query.message.reply_media_group(media)
@@ -258,18 +323,19 @@ async def view_product(query, product_id: str):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
     else:
-        # No images
-        await query.message.reply_text(
+        # No images, edit the message
+        await query.edit_message_text(
             caption,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
-    # Delete the original message
-    try:
-        await query.message.delete()
-    except:
-        pass
+    # Delete the original message only if we sent new messages
+    if product.images:
+        try:
+            await query.message.delete()
+        except:
+            pass
 
 # ============= ORDER FLOW =============
 async def start_order(query, product_id: str):
@@ -289,11 +355,11 @@ async def start_order(query, product_id: str):
     }
     
     await query.edit_message_text(
-        f"🛒 **Order: {product.name}**\n\n"
+        f"🛒 <b>Order: {product.name}</b>\n\n"
         f"💰 Price: {format_price(product.price)}\n\n"
         f"📦 How many do you want?\n"
         f"(Type a number, e.g., 1, 2, 3)",
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.HTML
     )
 
 async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,12 +388,15 @@ async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"📦 Quantity: {quantity}\n"
                 f"💰 Total: {format_price(total)}\n\n"
                 f"📱 Please enter your phone number:",
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.HTML
             )
         except ValueError:
             await update.message.reply_text("❌ Please enter a valid number (e.g., 1, 2, 3)")
     
     elif step == "phone":
+        if not (text.startswith('+') and len(text) >= 10 and text[1:].isdigit()):
+            await update.message.reply_text("❌ Please enter a valid phone number (e.g., +2349040164120)")
+            return
         state["phone"] = text
         state["step"] = "address"
         await update.message.reply_text(
@@ -364,21 +433,20 @@ async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Confirmation to user
         await update.message.reply_text(
-            f"✅ **Order Confirmed!**\n\n"
+            f"✅ <b>Order Confirmed!</b>\n\n"
             f"📋 Order ID: `{order_id}`\n"
             f"🛍️ Product: {product.name}\n"
             f"📦 Quantity: {quantity}\n"
             f"💰 Total: {format_price(total)}\n"
             f"📱 Phone: {state['phone']}\n"
-            f"🏠 Address: {state['address']}\n\n"
+            f"🏠 Delivery Address: {state['address']}\n\n"
             f"⏳ Status: Pending confirmation\n\n"
             f"We'll contact you shortly! 🙏",
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.HTML
         )
         
-        # Notify admins
         admin_message = (
-            f"🚨 **NEW ORDER**\n\n"
+            f"🚨 <b>NEW ORDER</b>\n\n"
             f"📋 Order ID: `{order_id}`\n"
             f"👤 Customer: {order.full_name}"
             f"{f' (@{order.username})' if order.username else ''}\n"
@@ -386,9 +454,9 @@ async def handle_order_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"🛍️ Product: {product.name}\n"
             f"📦 Quantity: {quantity}\n"
             f"💰 Total: {format_price(total)}\n"
-            f"🏠 Address: {state['address']}\n"
+            f"🏠 Delivery Address: {state['address']}\n"
             f"🕐 Time: {order.timestamp}\n\n"
-            f"Use /orders_admin to manage orders"
+            
         )
         
         await notify_admins(context, admin_message)
@@ -414,7 +482,7 @@ async def my_orders(query):
     # Sort by timestamp (newest first)
     user_orders.sort(key=lambda x: x.timestamp, reverse=True)
     
-    text = "📦 **Your Orders**\n\n"
+    text = "📦 <b>Your Orders</b>\n\n"
     keyboard = []
     
     for order in user_orders[:10]:  # Show last 10 orders
@@ -427,7 +495,7 @@ async def my_orders(query):
         }.get(order.status, "⏳")
         
         text += (
-            f"{status_emoji} **{order.order_id}**\n"
+            f"{status_emoji} <b>{order.order_id}</b>\n"
             f"   {order.product_name} x{order.quantity}\n"
             f"   {format_price(order.total_price)} - {order.status.title()}\n\n"
         )
@@ -441,7 +509,7 @@ async def my_orders(query):
     
     await query.edit_message_text(
         text,
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -457,8 +525,8 @@ async def admin_panel(query):
     total_products = len(products)
     
     text = (
-        f"⚙️ **Admin Panel**\n\n"
-        f"📊 **Statistics:**\n"
+        f"⚙️ <b>Admin Panel</b>\n\n"
+        f"📊 <b>Statistics:</b>\n"
         f"• Products: {total_products}\n"
         f"• Total Orders: {total_orders}\n"
         f"• Pending Orders: {pending_orders}\n"
@@ -473,7 +541,7 @@ async def admin_panel(query):
     
     await query.edit_message_text(
         text,
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -495,8 +563,8 @@ async def add_product_start(query):
     ]
     
     await query.edit_message_text(
-        "➕ **Add New Product**\n\nSelect category:",
-        parse_mode=ParseMode.MARKDOWN,
+        "➕ <b>Add New Product</b>\n\nSelect category:",
+        parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -552,12 +620,12 @@ async def handle_add_product(update: Update, context: ContextTypes.DEFAULT_TYPE)
             save_data()
             
             await update.message.reply_text(
-                f"✅ **Product Added!**\n\n"
+                f"✅ <b>Product Added!</b>\n\n"
                 f"📦 {product.name}\n"
                 f"💰 {format_price(product.price)}\n"
                 f"📸 {len(product.images)} images\n\n"
-                f"Product is now live!",
-                parse_mode=ParseMode.MARKDOWN
+                f"<b>Product is now live!</b>",
+                parse_mode=ParseMode.HTML
             )
             
             user_states.pop(user_id, None)
@@ -590,7 +658,7 @@ async def admin_orders(query):
     shipped = [o for o in orders.values() if o.status == "shipped"]
     
     text = (
-        f"📦 **Order Management**\n\n"
+        f"📦 <b>Order Management</b>\n\n"
         f"⏳ Pending: {len(pending)}\n"
         f"✅ Confirmed: {len(confirmed)}\n"
         f"🚚 Shipped: {len(shipped)}\n\n"
@@ -606,7 +674,7 @@ async def admin_orders(query):
     
     await query.edit_message_text(
         text,
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -619,8 +687,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Main menu
     if data == "main_menu":
-        user_states.pop(query.from_user.id, None)
-        await start(update, context)
+        await show_main_menu(query)
         return
     
     # Browse categories
@@ -695,27 +762,39 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not context.args:
-        await update.message.reply_text("Usage: /broadcast <message>")
+        await update.message.reply_text(
+            "Usage: /broadcast <message>\n\n"
+            "Example: /broadcast Hello everyone! New products available!"
+        )
         return
     
     message = " ".join(context.args)
     
-    # Get all user IDs from orders
-    user_ids = set(o.user_id for o in orders.values())
-    
+    # Use tracked user IDs instead of just order users
+    total_users = len(user_ids_set)
     sent = 0
-    for user_id in user_ids:
+    failed = 0
+    
+    await update.message.reply_text(f"📤 Broadcasting to {total_users} users...")
+    
+    for user_id in user_ids_set:
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"📢 **Announcement**\n\n{message}",
-                parse_mode=ParseMode.MARKDOWN
+                text=f"📢 <b>Announcement</b>\n\n{message}",
+                parse_mode=ParseMode.HTML
             )
             sent += 1
-        except:
-            pass
+        except Exception as e:
+            failed += 1
+            logger.error(f"Failed to send to {user_id}: {e}")
     
-    await update.message.reply_text(f"✅ Broadcast sent to {sent} users")
+    await update.message.reply_text(
+        f"✅ **Broadcast Complete!**\n\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}\n"
+        f"📊 Total: {total_users}"
+    )
 
 # ============= ERROR HANDLER =============
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -736,6 +815,7 @@ def main():
     # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("broadcast", broadcast))
     
     # Callbacks
